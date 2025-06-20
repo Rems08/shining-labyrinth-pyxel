@@ -1,1 +1,3 @@
 # shining-labyrinth-pyxel
+Tu dois réaliser un jeu vidéo en Python sur le framework Pyxel. Ton objectif est de créer un jeu sur le thème du film shining lors de la scène du labyrinthe. Deux personnages sont présent le fils qui doit fuir le père et le père avec sa hache qui doit tuer son fils. Le fils est joué par le joueur et le père doit le pourchasser et le tuer dans le labyrinthe. Le joueur laisse des pas dans la neige qui restent un certains nombre de temps le père peut suivre les empreintes de pas et si il ne les trouvent pas il cherche aléatoirement dans le labyrinthe. Il y a une entrée et une sortie le fils doit réussir à trouver la sortie avant de se faire attraper par son père.
+

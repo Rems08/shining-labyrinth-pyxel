@@ -1,0 +1,87 @@
+# .github/workflows/pyxel-web.yml
+name: Build & Deploy Pyxel Web
+on:
+  push:          { branches: [main] }
+  pull_request:  { branches: [main] }
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages:    write
+  id-token: write
+
+env:
+  PYTHON_VERSION: "3.12"
+  APP_DIR:        "src"
+  STARTUP_SCRIPT: "main.py"
+  APP_NAME:       "game"
+  OUTPUT_DIR:     "web"
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 0️⃣  SDL2 runtime – required by pyxel.cli
+      - name: Install SDL2 runtime libs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsdl2-2.0-0          \
+            libsdl2-image-2.0-0    \
+            libsdl2-mixer-2.0-0    \
+            libsdl2-ttf-2.0-0      \
+            libsdl2-dev            # headers are optional but harmless
+
+      - name: Set up Python
+        uses: actions/setup-python@v5   # ← v5 is current
+
+      - name: Install Pyxel CLI
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyxel
+
+      - name: Build .pyxapp
+        run: |
+          mkdir -p dist
+          # 1. Package the game → creates src.pyxapp
+          pyxel package "${{ env.APP_DIR }}" \
+                        "${{ env.APP_DIR }}/${{ env.STARTUP_SCRIPT }}"
+          # 2. Move/rename to the place later steps expect
+          mv "${{ env.APP_DIR }}.pyxapp" "dist/${{ env.APP_NAME }}.pyxapp"
+
+      - name: Convert to HTML
+        working-directory: dist           # <-- change cwd
+        run: |
+          pyxel app2html "${{ env.APP_NAME }}.pyxapp"   # creates game.html here
+          mkdir -p ../${{ env.OUTPUT_DIR }}
+          mv "${{ env.APP_NAME }}.html" ../${{ env.OUTPUT_DIR }}/index.html
+          touch ../${{ env.OUTPUT_DIR }}/.nojekyll
+
+
+
+      # ---- Pages pipeline: all v4/v5/v3 actions ----
+      - name: Configure Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ env.OUTPUT_DIR }}
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
