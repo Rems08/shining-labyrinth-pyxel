@@ -6,40 +6,43 @@ Tiny patch — just finishes the truncated `draw()` method and adds the
 usual `if __name__ == "__main__":` launcher.
 """
 
-import random
-import heapq
 import collections
+import heapq
+import random
 from typing import List, Tuple, Dict
 
 import pyxel
 
+from src.player_input_reader import PlayerInputReader
+
 # ---------------------------------------------------------------------------
 # Tunables
 # ---------------------------------------------------------------------------
-CELL = 32               # tile size in pixels (your sprites are 16×16)
-MAZE_W, MAZE_H = 31, 31 # keep odd numbers (perfect maze)
-VIEW_TILES_X = 17       # width of camera window in tiles (odd)
-VIEW_TILES_Y = 13       # height of camera window in tiles (odd)
+CELL = 32  # tile size in pixels (your sprites are 16×16)
+MAZE_W, MAZE_H = 31, 31  # keep odd numbers (perfect maze)
+VIEW_TILES_X = 17  # width of camera window in tiles (odd)
+VIEW_TILES_Y = 13  # height of camera window in tiles (odd)
 SCREEN_W = VIEW_TILES_X * CELL
 SCREEN_H = VIEW_TILES_Y * CELL
 FPS = 60
-FOOTPRINT_TTL = 10 * FPS   # frames footprints persist
-TRACK_INTERVAL = 12        # Jack replans every n frames
-PLAYER_SPEED = 4           # pixels per frame (4 → one tile in 4 frames)
+FOOTPRINT_TTL = 10 * FPS  # frames footprints persist
+TRACK_INTERVAL = 12  # Jack replans every n frames
+PLAYER_SPEED = 4  # pixels per frame (4 → one tile in 4 frames)
 ENEMY_SPEED = 2
 
 # bank‑0 coordinates for tiles
-TILE_SNOW   = (0, 0)
-TILE_BUSH   = (CELL, 0)
-TILE_FOOT   = (CELL * 2, 0)
+TILE_SNOW = (0, 0)
+TILE_BUSH = (CELL, 0)
+TILE_FOOT = (CELL * 2, 0)
 
 # Direction helpers ----------------------------------------------------------
 DIRS = {
-    "UP":    (0, -1),
-    "DOWN":  (0, 1),
-    "LEFT":  (-1, 0),
+    "UP": (0, -1),
+    "DOWN": (0, 1),
+    "LEFT": (-1, 0),
     "RIGHT": (1, 0),
 }
+
 
 # ---------------------------------------------------------------------------
 # Maze generation
@@ -47,6 +50,7 @@ DIRS = {
 
 def generate_maze(w: int, h: int) -> List[List[int]]:
     grid = [[0] * w for _ in range(h)]
+
     def carve(cx: int, cy: int):
         dirs = list(DIRS.values())
         random.shuffle(dirs)
@@ -56,6 +60,7 @@ def generate_maze(w: int, h: int) -> List[List[int]]:
                 grid[cy + dy][cx + dx] = 1
                 grid[ny][nx] = 1
                 carve(nx, ny)
+
     grid[1][1] = 1
     carve(1, 1)
     return grid
@@ -79,6 +84,7 @@ def farthest_point(grid: List[List[int]], start: Tuple[int, int]):
                     far, farpos = dist[ny][nx], (nx, ny)
     return farpos
 
+
 # ---------------------------------------------------------------------------
 # A* path‑finding (Jack)
 # ---------------------------------------------------------------------------
@@ -89,8 +95,10 @@ def astar(grid: List[List[int]], start: Tuple[int, int], goal: Tuple[int, int]):
     h, w = len(grid), len(grid[0])
     sx, sy = start
     gx, gy = goal
+
     def hdist(x, y):
         return abs(x - gx) + abs(y - gy)
+
     open_set = [(hdist(sx, sy), 0, sx, sy)]
     came: Dict[Tuple[int, int], Tuple[int, int]] = {}
     g_cost = {start: 0}
@@ -112,6 +120,7 @@ def astar(grid: List[List[int]], start: Tuple[int, int], goal: Tuple[int, int]):
                     heapq.heappush(open_set, (nc + hdist(nx, ny), nc, nx, ny))
     return []
 
+
 # ---------------------------------------------------------------------------
 # Entities
 # ---------------------------------------------------------------------------
@@ -119,12 +128,15 @@ class Footprint:
     def __init__(self, x: int, y: int):
         self.x, self.y = x, y
         self.ttl = FOOTPRINT_TTL
+
     @property
     def tile(self) -> Tuple[int, int]:
         return self.x, self.y
+
     def update(self) -> bool:
         self.ttl -= 1
         return self.ttl <= 0
+
     def draw(self, camx: int, camy: int):
         px, py = self.x * CELL - camx, self.y * CELL - camy
         if -CELL < px < SCREEN_W and -CELL < py < SCREEN_H:
@@ -139,14 +151,17 @@ class CharacterBase:
         "RIGHT": CELL * 2,
         "LEFT": CELL * 2,  # mirror for left
     }
+
     def __init__(self, x: int, y: int, bank: int):
         self.x, self.y = x, y
         self.px, self.py = x * CELL, y * CELL
         self.dir = "DOWN"
         self.bank = bank
+
     @property
     def tile(self) -> Tuple[int, int]:
         return self.x, self.y
+
     def draw(self, camx: int, camy: int):
         dx = self.px - camx
         dy = self.py - camy
@@ -163,6 +178,7 @@ class Player(CharacterBase):
         super().__init__(x, y, bank=1)
         self.moving = False
         self.vx = self.vy = 0
+
     def handle_input(self, grid: List[List[int]]):
         if self.moving:
             return
@@ -181,6 +197,7 @@ class Player(CharacterBase):
                     self.moving = True
                     self.vx, self.vy = dx * PLAYER_SPEED, dy * PLAYER_SPEED
                 break
+
     def update(self):
         if self.moving:
             self.px += self.vx
@@ -195,6 +212,7 @@ class Enemy(CharacterBase):
         super().__init__(x, y, bank=2)
         self.path: List[Tuple[int, int]] = []
         self.frame = 0
+
     def _target(self, player_pos: Tuple[int, int], footprints: List[Footprint]):
         if footprints:
             return footprints[-1].tile
@@ -202,6 +220,7 @@ class Enemy(CharacterBase):
         if abs(px - self.x) + abs(py - self.y) <= 6:
             return player_pos
         return None
+
     def update(self, grid: List[List[int]], player_pos: Tuple[int, int], footprints: List[Footprint]):
         if self.frame % TRACK_INTERVAL == 0:
             tgt = self._target(player_pos, footprints)
@@ -219,16 +238,21 @@ class Enemy(CharacterBase):
         if self.path:
             tx, ty = self.path[0]
             if self.px < tx * CELL:
-                self.px += ENEMY_SPEED; self.dir = "RIGHT"
+                self.px += ENEMY_SPEED;
+                self.dir = "RIGHT"
             elif self.px > tx * CELL:
-                self.px -= ENEMY_SPEED; self.dir = "LEFT"
+                self.px -= ENEMY_SPEED;
+                self.dir = "LEFT"
             elif self.py < ty * CELL:
-                self.py += ENEMY_SPEED; self.dir = "DOWN"
+                self.py += ENEMY_SPEED;
+                self.dir = "DOWN"
             elif self.py > ty * CELL:
-                self.py -= ENEMY_SPEED; self.dir = "UP"
+                self.py -= ENEMY_SPEED;
+                self.dir = "UP"
             if self.px // CELL == tx and self.py // CELL == ty and self.px % CELL == 0 and self.py % CELL == 0:
                 self.x, self.y = tx, ty
                 self.path.pop(0)
+
 
 # ---------------------------------------------------------------------------
 # Game class
@@ -239,6 +263,9 @@ class Game:
         self.grid = generate_maze(MAZE_W, MAZE_H)
         self.start = (1, 1)
         self.exit = farthest_point(self.grid, self.start)
+
+        self.player_input_reader = PlayerInputReader(self.grid)
+
         self.player = Player(*self.start)
         self.enemy = Enemy(*self.exit)
         self.footprints: List[Footprint] = []
@@ -250,17 +277,17 @@ class Game:
     # ------------------------------------------------------------------
     def _load_images(self):
         # tiles (bank 0)
-        pyxel.images[0].load(0, 0, "src/sprites/labyrinth/snow.png")
-        pyxel.images[0].load(CELL, 0, "src/sprites/labyrinth/bush.png")
-        pyxel.images[0].load(CELL*2, 0, "src/sprites/labyrinth/snow-footstep.png")
+        pyxel.images[0].load(0, 0, "../assets/sprites/labyrinth/snow.png")
+        pyxel.images[0].load(CELL, 0, "../assets/sprites/labyrinth/bush.png")
+        pyxel.images[0].load(CELL * 2, 0, "../assets/sprites/labyrinth/snow-footstep.png")
         # Danny (bank 1) – 3 orientations packed horizontally
-        pyxel.images[1].load(0, 0, "src/sprites/danny/danny-front.png")
-        pyxel.images[1].load(CELL, 0, "src/sprites/danny/danny-back.png")
-        pyxel.images[1].load(CELL*2, 0, "src/sprites/danny/danny-side.png")
+        pyxel.images[1].load(0, 0, "../assets/sprites/danny/danny-front.png")
+        pyxel.images[1].load(CELL, 0, "../assets/sprites/danny/danny-back.png")
+        pyxel.images[1].load(CELL * 2, 0, "../assets/sprites/danny/danny-side.png")
         # Jack (bank 2)
-        pyxel.images[2].load(0, 0, "src/sprites/jack/jack-front.png")
-        pyxel.images[2].load(CELL, 0, "src/sprites/jack/jack-back.png")
-        pyxel.images[2].load(CELL*2, 0, "src/sprites/jack/jack-side.png")
+        pyxel.images[2].load(0, 0, "../assets/sprites/jack/jack-front.png")
+        pyxel.images[2].load(CELL, 0, "../assets/sprites/jack/jack-back.png")
+        pyxel.images[2].load(CELL * 2, 0, "../assets/sprites/jack/jack-side.png")
 
     # ------------------------------------------------------------------
     def update(self):
@@ -268,6 +295,9 @@ class Game:
             if pyxel.btnp(pyxel.KEY_R):
                 self.__init__()
             return
+
+        self.player_input_reader.read()
+
         self.player.handle_input(self.grid)
         self.player.update()
         if not self.footprints or self.footprints[-1].tile != self.player.tile:
@@ -314,14 +344,14 @@ class Game:
         dx = ex * CELL - camx
         dy = ey * CELL - camy
         if -CELL < dx < SCREEN_W and -CELL < dy < SCREEN_H:
-            pyxel.rectb(dx+1, dy+1, CELL-2, CELL-2, 11)
+            pyxel.rectb(dx + 1, dy + 1, CELL - 2, CELL - 2, 11)
         # overlay -----------------------------------------------------------
         if self.state == "WIN":
-            pyxel.text(SCREEN_W//2-20, SCREEN_H//2, "YOU ESCAPED!", 10)
-            pyxel.text(SCREEN_W//2-40, SCREEN_H//2+8, "Press R to restart", 7)
+            pyxel.text(SCREEN_W // 2 - 20, SCREEN_H // 2, "YOU ESCAPED!", 10)
+            pyxel.text(SCREEN_W // 2 - 40, SCREEN_H // 2 + 8, "Press R to restart", 7)
         elif self.state == "LOSE":
-            pyxel.text(SCREEN_W//2-24, SCREEN_H//2, "HERE'S JOHNNY!", 8)
-            pyxel.text(SCREEN_W//2-40, SCREEN_H//2+8, "Press R to restart", 7)
+            pyxel.text(SCREEN_W // 2 - 24, SCREEN_H // 2, "HERE'S JOHNNY!", 8)
+            pyxel.text(SCREEN_W // 2 - 40, SCREEN_H // 2 + 8, "Press R to restart", 7)
 
 
 if __name__ == "__main__":
