@@ -16,7 +16,7 @@ import pyxel
 # ---------------------------------------------------------------------------
 # Tunables
 # ---------------------------------------------------------------------------
-CELL = 16               # tile size in pixels (your sprites are 16×16)
+CELL = 32               # tile size in pixels (your sprites are 16×16)
 MAZE_W, MAZE_H = 31, 31 # keep odd numbers (perfect maze)
 VIEW_TILES_X = 17       # width of camera window in tiles (odd)
 VIEW_TILES_Y = 13       # height of camera window in tiles (odd)
