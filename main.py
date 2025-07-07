@@ -1,32 +1,28 @@
-"""
-Shining‑Labyrinth (v2.1.1)
-==========================
-
-Tiny patch — just finishes the truncated `draw()` method and adds the
-usual `if __name__ == "__main__":` launcher.
-"""
-
 import random
 import heapq
 import collections
-from typing import List, Tuple, Dict
+from typing import List, Tuple, Dict, Optional
 
 import pyxel
 
 # ---------------------------------------------------------------------------
 # Tunables
 # ---------------------------------------------------------------------------
-CELL = 32               # tile size in pixels (your sprites are 16×16)
+CELL = 32               # tile size in pixels (sprites are 16×16)
 MAZE_W, MAZE_H = 31, 31 # keep odd numbers (perfect maze)
 VIEW_TILES_X = 17       # width of camera window in tiles (odd)
 VIEW_TILES_Y = 13       # height of camera window in tiles (odd)
 SCREEN_W = VIEW_TILES_X * CELL
 SCREEN_H = VIEW_TILES_Y * CELL
 FPS = 60
+
 FOOTPRINT_TTL = 10 * FPS   # frames footprints persist
 TRACK_INTERVAL = 12        # Jack replans every n frames
+SIGHT_RANGE = 5            # tiles – how far Jack can spot prints / Danny
 PLAYER_SPEED = 4           # pixels per frame (4 → one tile in 4 frames)
 ENEMY_SPEED = 2
+BRAID_PROB = 0.18          # probability to remove a wall when braiding
+MAX_FOOTPRINTS = 300
 
 # bank‑0 coordinates for tiles
 TILE_SNOW   = (0, 0)
@@ -46,6 +42,7 @@ DIRS = {
 # ---------------------------------------------------------------------------
 
 def generate_maze(w: int, h: int) -> List[List[int]]:
+    """Binary DFS maze (perfect). Passages are 1, walls are 0."""
     grid = [[0] * w for _ in range(h)]
     def carve(cx: int, cy: int):
         dirs = list(DIRS.values())
@@ -59,6 +56,23 @@ def generate_maze(w: int, h: int) -> List[List[int]]:
     grid[1][1] = 1
     carve(1, 1)
     return grid
+
+
+def braid_maze(grid: List[List[int]], p: float = BRAID_PROB) -> None:
+    """Remove a fraction *p* of walls that separate adjacent passages to
+    create loops, turning the perfect maze into a braided one.  Works in‑place."""
+    h, w = len(grid), len(grid[0])
+    for y in range(1, h - 1, 2):
+        for x in range(1, w - 1, 2):
+            if random.random() < p:
+                choices = []
+                for dx, dy in [(2, 0), (-2, 0), (0, 2), (0, -2)]:
+                    nx, ny = x + dx, y + dy
+                    if 0 <= nx < w and 0 <= ny < h and grid[ny][nx]:
+                        choices.append((dx // 2, dy // 2))
+                if choices:
+                    dx, dy = random.choice(choices)
+                    grid[y + dy][x + dx] = 1
 
 
 def farthest_point(grid: List[List[int]], start: Tuple[int, int]):
@@ -119,12 +133,15 @@ class Footprint:
     def __init__(self, x: int, y: int):
         self.x, self.y = x, y
         self.ttl = FOOTPRINT_TTL
+
     @property
     def tile(self) -> Tuple[int, int]:
         return self.x, self.y
+
     def update(self) -> bool:
         self.ttl -= 1
         return self.ttl <= 0
+
     def draw(self, camx: int, camy: int):
         px, py = self.x * CELL - camx, self.y * CELL - camy
         if -CELL < px < SCREEN_W and -CELL < py < SCREEN_H:
@@ -139,14 +156,17 @@ class CharacterBase:
         "RIGHT": CELL * 2,
         "LEFT": CELL * 2,  # mirror for left
     }
+
     def __init__(self, x: int, y: int, bank: int):
         self.x, self.y = x, y
         self.px, self.py = x * CELL, y * CELL
         self.dir = "DOWN"
         self.bank = bank
+
     @property
     def tile(self) -> Tuple[int, int]:
         return self.x, self.y
+
     def draw(self, camx: int, camy: int):
         dx = self.px - camx
         dy = self.py - camy
@@ -163,6 +183,7 @@ class Player(CharacterBase):
         super().__init__(x, y, bank=1)
         self.moving = False
         self.vx = self.vy = 0
+
     def handle_input(self, grid: List[List[int]]):
         if self.moving:
             return
@@ -181,6 +202,7 @@ class Player(CharacterBase):
                     self.moving = True
                     self.vx, self.vy = dx * PLAYER_SPEED, dy * PLAYER_SPEED
                 break
+
     def update(self):
         if self.moving:
             self.px += self.vx
@@ -195,29 +217,54 @@ class Enemy(CharacterBase):
         super().__init__(x, y, bank=2)
         self.path: List[Tuple[int, int]] = []
         self.frame = 0
-    def _target(self, player_pos: Tuple[int, int], footprints: List[Footprint]):
-        if footprints:
-            return footprints[-1].tile
+
+    # ------------------------------------------------------------------
+    # Hunting logic
+    # ------------------------------------------------------------------
+    def _see_player(self, player_pos: Tuple[int, int]) -> bool:
         px, py = player_pos
-        if abs(px - self.x) + abs(py - self.y) <= 6:
-            return player_pos
+        return abs(px - self.x) + abs(py - self.y) <= SIGHT_RANGE
+
+    def _see_print(self, fp: Footprint) -> bool:
+        return abs(fp.x - self.x) + abs(fp.y - self.y) <= SIGHT_RANGE
+
+    def _nearest_visible_print(self, footprints: List[Footprint]) -> Optional[Tuple[int, int]]:
+        for fp in reversed(footprints):  # newest first
+            if self._see_print(fp):
+                return fp.tile
         return None
+
+    def _wander(self, grid: List[List[int]]) -> List[Tuple[int, int]]:
+        """Pick a random target tile and return a path. Tries a few times."""
+        for _ in range(30):
+            tx = random.randrange(1, MAZE_W, 2)
+            ty = random.randrange(1, MAZE_H, 2)
+            if grid[ty][tx]:
+                p = astar(grid, self.tile, (tx, ty))
+                if p:
+                    return p
+        return []
+
+    # ------------------------------------------------------------------
     def update(self, grid: List[List[int]], player_pos: Tuple[int, int], footprints: List[Footprint]):
-        if self.frame % TRACK_INTERVAL == 0:
-            tgt = self._target(player_pos, footprints)
-            if tgt:
-                self.path = astar(grid, self.tile, tgt)
+        # re‑plan path periodically or when there is none
+        if self.frame % TRACK_INTERVAL == 0 or not self.path:
+            target = self._nearest_visible_print(footprints)
+            if target is None and self._see_player(player_pos):
+                target = player_pos
+            if target is not None:
+                self.path = astar(grid, self.tile, target)
             else:
-                dirs = list(DIRS.values())
-                random.shuffle(dirs)
-                for dx, dy in dirs:
-                    nx, ny = self.x + dx, self.y + dy
-                    if 0 <= nx < MAZE_W and 0 <= ny < MAZE_H and grid[ny][nx] == 1:
-                        self.path = [(nx, ny)]
-                        break
+                # wander if we have no clue
+                if not self.path:
+                    self.path = self._wander(grid)
+
         self.frame += 1
+
+        # follow current path -----------------------------------------
         if self.path:
             tx, ty = self.path[0]
+            # move pixel‑wise towards tx,ty
             if self.px < tx * CELL:
                 self.px += ENEMY_SPEED; self.dir = "RIGHT"
             elif self.px > tx * CELL:
@@ -226,6 +273,7 @@ class Enemy(CharacterBase):
                 self.py += ENEMY_SPEED; self.dir = "DOWN"
             elif self.py > ty * CELL:
                 self.py -= ENEMY_SPEED; self.dir = "UP"
+            # reached next step ?
             if self.px // CELL == tx and self.py // CELL == ty and self.px % CELL == 0 and self.py % CELL == 0:
                 self.x, self.y = tx, ty
                 self.path.pop(0)
@@ -237,6 +285,7 @@ class Game:
     def __init__(self):
         random.seed()
         self.grid = generate_maze(MAZE_W, MAZE_H)
+        braid_maze(self.grid, BRAID_PROB)           # <‑‑ extra loops
         self.start = (1, 1)
         self.exit = farthest_point(self.grid, self.start)
         self.player = Player(*self.start)
@@ -268,14 +317,26 @@ class Game:
             if pyxel.btnp(pyxel.KEY_R):
                 self.__init__()
             return
+
+        # -- Player -----------------------------------------------------
+        old_tile = self.player.tile
         self.player.handle_input(self.grid)
         self.player.update()
-        if not self.footprints or self.footprints[-1].tile != self.player.tile:
-            self.footprints.append(Footprint(*self.player.tile))
-            if len(self.footprints) > 200:
-                self.footprints.pop(0)
+
+        # leave footprint on the tile Danny *just vacated*
+        if self.player.tile != old_tile:
+            if not self.footprints or self.footprints[-1].tile != old_tile:
+                self.footprints.append(Footprint(*old_tile))
+                if len(self.footprints) > MAX_FOOTPRINTS:
+                    self.footprints.pop(0)
+
+        # -- Enemy ------------------------------------------------------
         self.enemy.update(self.grid, self.player.tile, self.footprints)
+
+        # -- Time on footprints ----------------------------------------
         self.footprints[:] = [fp for fp in self.footprints if not fp.update()]
+
+        # -- Win / lose -------------------------------------------------
         if self.player.tile == self.enemy.tile:
             self.state = "LOSE"
         elif self.player.tile == self.exit:
@@ -292,7 +353,7 @@ class Game:
     def draw(self):
         camx, camy = self._camera()
         pyxel.cls(0)
-        # Draw visible slice -------------------------------------------------
+        # Draw visible slice ------------------------------------------
         minx = camx // CELL
         miny = camy // CELL
         maxx = minx + VIEW_TILES_X + 1
@@ -304,18 +365,18 @@ class Game:
                     dx = x * CELL - camx
                     dy = y * CELL - camy
                     pyxel.blt(dx, dy, 0, u, v, CELL, CELL, 0)
-        # footprints & actors ----------------------------------------------
+        # footprints & actors ----------------------------------------
         for fp in self.footprints:
             fp.draw(camx, camy)
         self.player.draw(camx, camy)
         self.enemy.draw(camx, camy)
-        # highlight exit if on screen --------------------------------------
+        # highlight exit if on screen ---------------------------------
         ex, ey = self.exit
         dx = ex * CELL - camx
         dy = ey * CELL - camy
         if -CELL < dx < SCREEN_W and -CELL < dy < SCREEN_H:
             pyxel.rectb(dx+1, dy+1, CELL-2, CELL-2, 11)
-        # overlay -----------------------------------------------------------
+        # overlay ------------------------------------------------------
         if self.state == "WIN":
             pyxel.text(SCREEN_W//2-20, SCREEN_H//2, "YOU ESCAPED!", 10)
             pyxel.text(SCREEN_W//2-40, SCREEN_H//2+8, "Press R to restart", 7)
